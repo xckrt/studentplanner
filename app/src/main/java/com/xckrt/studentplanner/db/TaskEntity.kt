@@ -1,9 +1,15 @@
 package com.xckrt.studentplanner.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "tasks")
+@Entity(
+    tableName = "tasks",
+    indices = [
+        Index(value = ["serverId"], unique = true)
+    ]
+)
 data class TaskEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val serverId: Int? = null,
@@ -12,7 +18,6 @@ data class TaskEntity(
     val subjectName: String? = null,
     val deadlineTimestamp: Long? = null,
     val isCompleted: Boolean = false,
-    val priority: Int = 0,
     val weight: Int = 1,
     val isFromNote: Boolean = false
 )

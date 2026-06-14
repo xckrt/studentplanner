@@ -12,6 +12,8 @@ import com.xckrt.studentplanner.TokenManager
 import com.xckrt.studentplanner.data.ApiService
 import com.xckrt.studentplanner.data.AuthManager
 import com.xckrt.studentplanner.data.UserLoginRequest
+import com.xckrt.studentplanner.service.FcmTopics
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
@@ -35,12 +37,15 @@ class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
                         Log.d("LoginFlow", "Токен: ${body.token.take(10)}...")
                         Log.d("LoginFlow", "Пришла группа от сервера: ${body.groupId}")
                         Log.d("LoginFlow", "Пришел ID юзера: ${body.userId}")
+                        val oldGroupId = tokenManager.groupId.first()
                         AuthManager.token = body.token
                         tokenManager.saveAuthData(
                             token = body.token,
                             groupId = body.groupId,
                             userId = body.userId
                         )
+                        FcmTopics.switchGroup(newGroupId = body.groupId, oldGroupId = oldGroupId)
+
                         tokenManager.saveProfileData(
                             fName = body.firstName ?: "",
                             lName = body.lastName ?: "",

@@ -36,18 +36,61 @@ class ScheduleViewModel(
 ) : ViewModel() {
 
 
-
+    var groupName by mutableStateOf("Загрузка...")
+        private set
     var scheduleList = mutableStateOf<List<ScheduleItem>>(emptyList())
     var isLoading = mutableStateOf(false)
     val tutorialStep: StateFlow<Int> = tokenManager.tutorialStep
-        .onEach { Log.d("Tutorial", "VM УВИДЕЛА ШАГ: $it") } // Лог при каждом изменении
+        .onEach { Log.d("Tutorial", "VM УВИДЕЛА ШАГ: $it") }
         .stateIn(
             scope = viewModelScope,
-            started = SharingStarted.Eagerly, // Eagerly заставит его загрузиться СРАЗУ
+            started = SharingStarted.Eagerly,
             initialValue = 1
         )
     var noteHistoryList by mutableStateOf<List<NoteHistoryDTO>>(emptyList())
         private set
+    var currentWeekParity by mutableStateOf(0)
+        private set
+    var weekOffset by mutableStateOf(0)
+        private set
+
+    val textWeekParity: String
+        get() = getWeekParity(currentWeekParity)
+    private fun displayedMonday(): Calendar {
+        val cal = Calendar.getInstance().apply {
+            firstDayOfWeek = Calendar.MONDAY
+            minimalDaysInFirstWeek = 4
+        }
+        if (weekOffset == 0 && cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) {
+            cal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+        cal.add(Calendar.DAY_OF_YEAR, weekOffset * 7)
+        return cal
+    }
+    val weekRangeLabel: String
+        get() {
+            val cal = displayedMonday()
+            val fmt = SimpleDateFormat("d MMM", Locale("ru"))
+            val mon = fmt.format(cal.time)
+            cal.add(Calendar.DAY_OF_YEAR, 5)
+            val sat = fmt.format(cal.time)
+            return "$mon – $sat"
+        }
+
+    fun changeWeek(groupId: Int, delta: Int) {
+        weekOffset += delta
+        fetchSchedule(groupId)
+    }
+
+    fun resetWeek(groupId: Int) {
+        if (weekOffset != 0) {
+            weekOffset = 0
+            fetchSchedule(groupId)
+        }
+    }
+
+
     var isHistoryLoading by mutableStateOf(false)
         private set
     fun nextStep(targetStep: Int? = null) {
@@ -58,16 +101,13 @@ class ScheduleViewModel(
             tokenManager.saveTutorialStep(next)
         }
     }
-    /**
-     * ГЛАВНЫЙ МЕТОД: Сохранение заметки + автоматическое создание задачи
-     */
     fun saveSharedNote(
         groupId: Int,
         subjectTitle: String,
         content: String,
         deadlineType: String?,
         customDate: String?,
-        isPrivate: Boolean // Запятую в конце параметров лучше убрать
+        isPrivate: Boolean
     ) {
         viewModelScope.launch {
             try {
@@ -78,20 +118,16 @@ class ScheduleViewModel(
                     content = content,
                     deadlineType = deadlineType,
                     deadlineDate = customDate,
-                    isPrivate = isPrivate// Передаем полученный ID
+                    isPrivate = isPrivate
                 )
 
                 val response = RetrofitClient.apiService.saveSharedNote(request)
 
                 if (response.isSuccessful) {
                     Log.d("SharedNote", "Облачная заметка сохранена")
-
-                    // --- АВТОМАТИЗАЦИЯ ---
                     if (deadlineType != null) {
                         saveNoteAsTaskLocally(subjectTitle, content)
                     }
-
-                    // Обновляем расписание, чтобы увидеть изменения
                     fetchSchedule(groupId)
                 }
             } catch (e: Exception) {
@@ -99,48 +135,34 @@ class ScheduleViewModel(
             }
         }
     }
-
-    /**
-     * Внутренний метод для создания локальной задачи из заметки
-     */
     private suspend fun saveNoteAsTaskLocally(subjectTitle: String, content: String) {
-        // 1. Создаем задачу в Room (она получит временный локальный ID)
-        val localId = taskDao.insertTask(TaskEntity(
+        val draft = TaskEntity(
+            serverId = null,
             title = "Заметка: $subjectTitle",
             description = content,
             subjectName = subjectTitle,
             isFromNote = true,
-            weight = 1 // Можем задать дефолтный вес для заметок
-        )).toInt()
+            weight = 1
+        )
+        val localId = taskDao.insertTask(draft).toInt()
 
-        // 2. Отправляем на сервер
         try {
             val response = RetrofitClient.apiService.createTask(
                 TaskDto(
                     id = 0,
-                    title = "Заметка: $subjectTitle",
-                    description = content,
-                    subjectName = subjectTitle,
-                    isCompleted = false, // <-- Вот где должно быть false!
-                    deadline = null,     // <-- У заметки пока нет дедлайна
-                    weight = 1           // <-- Не забываем про вес
+                    title = draft.title,
+                    description = draft.description,
+                    subjectName = draft.subjectName,
+                    isCompleted = false,
+                    deadline = null,
+                    weight = draft.weight
                 )
             )
 
             if (response.isSuccessful) {
-                // Обрати внимание: если createTask возвращает TaskDto,
-                // то нужно писать response.body()?.id
-                // Если он возвращает JsonObject/Map, то твой вариант с get("id") сработает.
-                // Я напишу безопасный вариант для TaskDto:
-                val serverId = response.body()?.id ?: 0
-
-                if (serverId > 0) {
-                    // 3. ОБНОВЛЯЕМ ID В ЛОКАЛЬНОЙ БАЗЕ
-                    val task = taskDao.getTaskById(localId)
-                    if (task != null) {
-                        taskDao.deleteTask(task)
-                        taskDao.insertTask(task.copy(id = serverId))
-                    }
+                val actualServerId = response.body()?.id ?: 0
+                if (actualServerId > 0) {
+                    taskDao.updateTaskServerId(localId = localId, serverId = actualServerId)
                 }
             }
         } catch (e: Exception) {
@@ -153,22 +175,44 @@ class ScheduleViewModel(
             isLoading.value = true
             try {
                 val baseLessons = RetrofitClient.apiService.getSchedule(groupId)
-                val calendar = Calendar.getInstance()
-                calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                val allChanges = mutableListOf<ScheduleItem>()
+
                 val allGroups = RetrofitClient.apiService.getGroups()
                 val groupName = allGroups.find { it.id == groupId }?.name
                     ?: throw Exception("Группа с ID $groupId не найдена на сервере")
-                for (i in 0..5) {
-                    val dateStr = dateFormat.format(calendar.time)
+                val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val todayDayOfWeek = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
+                val isCurrentWeek = weekOffset == 0
+                val calendar = displayedMonday()
+                val displayedMondayStr = dateFormat.format(calendar.time)
+                fetchCurrentWeekParity(groupName, displayedMondayStr)
+                val daysToFetch = mutableListOf<Pair<String, Int>>()
+                for (i in 1..6) {
+                    daysToFetch.add(Pair(dateFormat.format(calendar.time), i))
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
+                }
+                if (isCurrentWeek && (todayDayOfWeek == Calendar.FRIDAY || todayDayOfWeek == Calendar.SATURDAY)) {
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
+                    daysToFetch.add(Pair(dateFormat.format(calendar.time), 8))
+                    if (todayDayOfWeek == Calendar.SATURDAY) {
+                        calendar.add(Calendar.DAY_OF_YEAR, 1)
+                        daysToFetch.add(Pair(dateFormat.format(calendar.time), 9))
+                    }
+                }
+                val extendedBaseLessons = baseLessons.toMutableList()
+                if (daysToFetch.any { it.second == 8 }) {
+                    extendedBaseLessons.addAll(baseLessons.filter { it.dayOfWeek == 1 }.map { it.copy(dayOfWeek = 8) })
+                }
+                if (daysToFetch.any { it.second == 9 }) {
+                    extendedBaseLessons.addAll(baseLessons.filter { it.dayOfWeek == 2 }.map { it.copy(dayOfWeek = 9) })
+                }
+                val allChanges = mutableListOf<ScheduleItem>()
+                for ((dateStr, virtualDay) in daysToFetch) {
                     try {
                         val daily = RetrofitClient.apiService.getDailySchedule(groupName, dateStr)
-                        allChanges.addAll(daily.map { it.copy(date = dateStr) })
+                        allChanges.addAll(daily.map { it.copy(date = dateStr, dayOfWeek = virtualDay) })
                     } catch (e: Exception) {
                         Log.e("API", "Нет изменений на $dateStr")
                     }
-                    calendar.add(Calendar.DAY_OF_YEAR, 1)
                 }
                 Log.d("MERGE_DEBUG", "=========================================")
                 Log.d("MERGE_DEBUG", "ВСЕГО ИЗМЕНЕНИЙ СКАЧАНО С СЕРВЕРА: ${allChanges.size}")
@@ -177,24 +221,28 @@ class ScheduleViewModel(
                 }
                 Log.d("MERGE_DEBUG", "=========================================")
                 val finalSchedule = mutableListOf<ScheduleItem>()
-                val cleanBaseLessons = baseLessons.filter { b ->
+                val cleanBaseLessons = extendedBaseLessons.filter { b ->
                     val t = b.subject?.title ?: ""
                     !t.contains("Кл.час", true) &&
                             !t.contains("Кл час", true) &&
                             !t.contains("Классный", true) &&
                             !t.contains("Разговоры о", true)
                 }
+
                 val baseGrouped = cleanBaseLessons.groupBy { "${it.dayOfWeek}_${it.lessonNumber}" }
                 val changesGrouped = allChanges.groupBy { "${it.dayOfWeek}_${it.lessonNumber}" }
                 val allKeys = (baseGrouped.keys + changesGrouped.keys).distinct()
+
                 for (key in allKeys) {
                     val bItems = baseGrouped[key] ?: emptyList()
                     val cItems = changesGrouped[key] ?: emptyList()
+
                     if (cItems.isNotEmpty()) {
                         Log.d("MERGE_DEBUG", "--- СЛОТ ВРЕМЕНИ $key ---")
                         Log.d("MERGE_DEBUG", "В базе: ${bItems.joinToString { it.subject?.title ?: "" }}")
                         Log.d("MERGE_DEBUG", "Изменения для этого слота: ${cItems.joinToString { it.subject?.title ?: "" }}")
                     }
+
                     val splitBaseItems = mutableListOf<ScheduleItem>()
                     bItems.forEach { b ->
                         val safeTitle = b.subject?.title?.replace("п/г", "п_г", true) ?: ""
@@ -208,6 +256,7 @@ class ScheduleViewModel(
                             var aud2 = audsRaw.getOrNull(1) ?: audsRaw.getOrNull(0) ?: b.auditorium
                             var teach1 = teachRaw.getOrNull(0) ?: b.teacher?.fullName
                             var teach2 = teachRaw.getOrNull(1) ?: teachRaw.getOrNull(0) ?: b.teacher?.fullName
+
                             if (subj1.contains("2 п", true) || subj2.contains("1 п", true)) {
                                 val ts = subj1; subj1 = subj2; subj2 = ts
                                 val ta = aud1; aud1 = aud2; aud2 = ta
@@ -219,7 +268,24 @@ class ScheduleViewModel(
                             splitBaseItems.add(b.copy(subject = b.subject?.copy(title = subj1), auditorium = aud1, teacher = b.teacher?.copy(fullName = teach1)))
                             splitBaseItems.add(b.copy(subject = b.subject?.copy(title = subj2), auditorium = aud2, teacher = b.teacher?.copy(fullName = teach2)))
                         } else {
-                            splitBaseItems.add(b)
+                            val bTitle = b.subject?.title ?: ""
+                            val isBaseAlreadySubgroup = bTitle.contains("1 п", true) || bTitle.contains("2 п", true)
+                            val hasSubgroupChanges = cItems.any {
+                                it.subject?.title?.contains("1 п", true) == true ||
+                                        it.subject?.title?.contains("2 п", true) == true
+                            }
+                            if (hasSubgroupChanges && !isBaseAlreadySubgroup) {
+                                splitBaseItems.add(b.copy(
+                                    subject = b.subject?.copy(title = "$bTitle 1 п/г"),
+                                    originalSubject = bTitle
+                                ))
+                                splitBaseItems.add(b.copy(
+                                    subject = b.subject?.copy(title = "$bTitle 2 п/г"),
+                                    originalSubject = bTitle
+                                ))
+                            } else  {
+                                splitBaseItems.add(b)
+                            }
                         }
                     }
 
@@ -243,9 +309,9 @@ class ScheduleViewModel(
                             val cIsPg1 = cTitle.contains("1 п", true)
                             val cIsPg2 = cTitle.contains("2 п", true)
                             val cClean = cTitle.replace(Regex("(?i)[12]\\s*п/?г?"), "").replace("ЗАМЕНА", "", true).trim()
-
                             if (bIsPg1 && cIsPg1) return@find true
                             if (bIsPg2 && cIsPg2) return@find true
+                            if (!bIsPg1 && !bIsPg2 && !cIsPg1 && !cIsPg2) return@find true
                             if (!cIsPg1 && !cIsPg2 && cClean.isNotBlank() && bClean.contains(cClean, true)) return@find true
                             if (!cIsPg1 && !cIsPg2 && cClean.equals("НЕТ", true)) return@find true
                             false
@@ -253,14 +319,20 @@ class ScheduleViewModel(
 
                         if (bestChange != null) {
                             matchedChanges.add(bestChange)
-                            val isCancelled = bestChange.isCancelled || bestChange.subject?.title?.trim()?.equals("НЕТ", true) == true
+                            val changeTitle = bestChange.subject?.title?.trim().orEmpty()
+                            val isCancelled = bestChange.isCancelled || changeTitle.equals("НЕТ", true)
+                            val isRoomOnly = !isCancelled && (
+                                changeTitle.startsWith("Смена аудитории", true) ||
+                                changeTitle.startsWith("Смена кабинета", true)
+                            )
                             processedSchedule.add(base.copy(
                                 isChange = true,
                                 isCancelled = isCancelled,
-                                originalSubject = base.subject?.title,
+                                isRoomChangeOnly = isRoomOnly,
+                                originalSubject = base.originalSubject ?: base.subject?.title,
                                 originalAuditorium = base.auditorium,
                                 originalTeacher = base.teacher?.fullName,
-                                subject = if (isCancelled) base.subject else bestChange.subject,
+                                subject = if (isCancelled || isRoomOnly) base.subject else bestChange.subject,
                                 auditorium = bestChange.auditorium?.takeIf { it.isNotBlank() } ?: base.auditorium,
                                 teacher = bestChange.teacher?.takeIf { it.fullName?.isNotBlank() == true } ?: base.teacher,
                                 date = bestChange.date
@@ -269,6 +341,7 @@ class ScheduleViewModel(
                             processedSchedule.add(base)
                         }
                     }
+
                     val correctBaseTimeLesson = splitBaseItems.find {
                         !it.startTime.isNullOrBlank() && !it.startTime.startsWith("00:00")
                     }
@@ -294,17 +367,33 @@ class ScheduleViewModel(
                     }
                     finalSchedule.addAll(processedSchedule)
                 }
+
                 scheduleList.value = finalSchedule.sortedWith(compareBy(
                     { it.dayOfWeek },
                     { it.lessonNumber },
                     { it.subject?.title?.contains("2 п", true) == true }
                 ))
+
             } catch (e: Exception) {
                 Log.e("API", "Критическая ошибка: ${e.message}")
             } finally {
                 isLoading.value = false
             }
         }
+    }
+    fun fetchCurrentWeekParity(groupName: String, date: String) {
+        viewModelScope.launch {
+            try {
+                val response = RetrofitClient.apiService.getWeekParity(groupName, date)
+                if (response.weekParity != 0) currentWeekParity = response.weekParity
+                Log.d("WeekParity","Сервер выдал ${response.weekParity}")
+            } catch (e: Exception) {
+                Log.e("Parity", "Ошибка загрузки четности: ${e.message}")
+            }
+        }
+    }
+    fun clearNoteHistory() {
+        noteHistoryList = emptyList()
     }
     fun fetchNoteHistory(groupId: Int, subjectTitle: String) {
         viewModelScope.launch {
@@ -315,6 +404,25 @@ class ScheduleViewModel(
                 noteHistoryList = emptyList()
             } finally {
                 isHistoryLoading = false
+            }
+        }
+    }
+    fun getWeekParity(weekParity: Int): String {
+        Log.d("weekParity","$weekParity")
+        return when (weekParity) {
+            1 -> "ЧИСЛИТЕЛЬ"
+            2 -> "ЗНАМЕНАТЕЛЬ"
+            else -> ""
+        }
+    }
+    fun getGroupName(groupId: Int) {
+        viewModelScope.launch {
+            try {
+                val name = RetrofitClient.apiService.getGroupName(groupId)
+                groupName = name.name
+            } catch (e: Exception) {
+                Log.e("GroupName", "Ошибка загрузки имени группы: ${e.message}")
+                groupName = "Ошибка"
             }
         }
     }

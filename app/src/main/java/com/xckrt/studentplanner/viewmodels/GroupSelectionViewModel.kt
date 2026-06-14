@@ -2,6 +2,7 @@ package com.xckrt.studentplanner.viewmodels
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -13,6 +14,8 @@ import com.xckrt.studentplanner.TokenManager
 import com.xckrt.studentplanner.data.ApiService
 import com.xckrt.studentplanner.data.GroupItem
 import com.xckrt.studentplanner.data.UpdateGroupRequest
+import com.xckrt.studentplanner.service.FcmTopics
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -50,7 +53,9 @@ class GroupSelectionViewModel(
                 val response = apiService.updateGroup(UpdateGroupRequest(groupId))
 
                 if (response.isSuccessful) {
+                    val oldGroupId = tokenManager.groupId.first()
                     tokenManager.saveGroupId(groupId)
+                    FcmTopics.switchGroup(newGroupId = groupId, oldGroupId = oldGroupId)
                     onComplete()
                 } else {
                     errorMessage = "Ошибка сервера: не удалось привязать группу"

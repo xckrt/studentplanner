@@ -10,7 +10,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.xckrt.studentplanner.TokenManager
 import com.xckrt.studentplanner.data.ApiService
+import com.xckrt.studentplanner.data.DeadlineCodec
 import com.xckrt.studentplanner.data.TaskDto
+import com.xckrt.studentplanner.data.TaskSyncManager
 import com.xckrt.studentplanner.db.NoteDao
 import com.xckrt.studentplanner.db.NoteEntity
 import com.xckrt.studentplanner.db.TaskDao
@@ -23,6 +25,10 @@ import java.util.*
 sealed class TaskDisplayItem {
     data class ManualTask(val task: TaskEntity) : TaskDisplayItem()
     data class NoteTask(val note: NoteEntity) : TaskDisplayItem()
+}
+sealed class TaskDateFilter {
+    data object All : TaskDateFilter()
+    data class Date(val millis: Long) : TaskDateFilter()
 }
 
 class TaskViewModel(
@@ -42,35 +48,66 @@ class TaskViewModel(
         viewModelScope.launch {
             val current = tutorialStep.value
             tokenManager.saveTutorialStep(current + 1)
-            Log.d("Tutorial", "Кофи перевел тебя на шаг: ${current + 1}")
+            Log.d("Tutorial", "Кофи перевёл тебя на шаг: ${current + 1}")
         }
     }
 
     fun finishTutorial() {
         viewModelScope.launch {
             tokenManager.setFirstLaunchCompleted()
-            tokenManager.saveTutorialStep(11)
+            tokenManager.saveTutorialStep(13)
             Log.d("Tutorial", "Обучение завершено!")
         }
     }
-    private val _selectedDate = MutableStateFlow(System.currentTimeMillis())
-    val selectedDate: StateFlow<Long> = _selectedDate.asStateFlow()
+    private val _filter = MutableStateFlow<TaskDateFilter>(TaskDateFilter.Date(System.currentTimeMillis()))
+    val filter: StateFlow<TaskDateFilter> = _filter.asStateFlow()
 
+    val selectedDate: StateFlow<Long> = _filter.map {
+        if (it is TaskDateFilter.Date) it.millis else System.currentTimeMillis()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), System.currentTimeMillis())
+
+    fun onDateSelected(date: Long) {
+        if (tutorialStep.value == 7) nextStep()
+        _filter.value = TaskDateFilter.Date(date)
+    }
+    fun showAll() {
+        _filter.value = TaskDateFilter.All
+    }
     val combinedTasks: StateFlow<List<TaskDisplayItem>> = combine(
         taskDao.getAllTasks(),
-        _selectedDate
-    ) { tasks, date ->
-        tasks.filter { task ->
-            task.deadlineTimestamp == null || isSameDay(task.deadlineTimestamp, date)
+        _filter
+    ) { tasks, filter ->
+        val today = System.currentTimeMillis()
+        val filtered = when (filter) {
+            is TaskDateFilter.All -> tasks
+            is TaskDateFilter.Date -> tasks.filter { task ->
+                val deadline = task.deadlineTimestamp
+                when {
+                    deadline == null -> true
+                    isSameDay(deadline, filter.millis) -> true
+                    isSameDay(filter.millis, today) && deadline < today && !task.isCompleted -> true
+                    else -> false
+                }
+            }
         }
-            .sortedWith(compareByDescending<TaskEntity> { it.weight }.thenBy { it.isCompleted })
+        filtered
+            .sortedWith(
+                compareBy<TaskEntity> { it.isCompleted }
+                    .thenByDescending { it.weight }
+                    .thenBy { it.deadlineTimestamp ?: Long.MAX_VALUE }
+            )
             .map { TaskDisplayItem.ManualTask(it) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val progress: StateFlow<Float> = combinedTasks.map { list ->
         if (list.isEmpty()) 0f
         else {
-            val completed = list.count { (it as TaskDisplayItem.ManualTask).task.isCompleted }
+            val completed = list.count { item ->
+                when (item) {
+                    is TaskDisplayItem.ManualTask -> item.task.isCompleted
+                    is TaskDisplayItem.NoteTask -> item.note.isCompleted
+                }
+            }
             completed.toFloat() / list.size
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0f)
@@ -80,31 +117,33 @@ class TaskViewModel(
     var newTaskSubject by mutableStateOf<String?>(null)
     var newTaskWeight by mutableIntStateOf(1)
     var newTaskDeadline by mutableStateOf<Long?>(null)
+    private val _errorEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val errorEvents: SharedFlow<String> = _errorEvents.asSharedFlow()
+    private val syncManager = TaskSyncManager(taskDao, apiService, alarmScheduler)
 
     init {
         loadSubjectsFromSchedule()
         syncWithServer()
     }
-    fun onDateSelected(date: Long) {
-        if (tutorialStep.value == 7) nextStep()
-        _selectedDate.value = date
-    }
 
     fun addTask() {
-        if (newTaskTitle.isBlank()) return
+        val title = newTaskTitle.trim()
+        if (title.isBlank()) {
+            viewModelScope.launch { _errorEvents.emit("Название задачи не может быть пустым") }
+            return
+        }
         if (tutorialStep.value == 8) nextStep()
 
-        val title = newTaskTitle
         val desc = newTaskDescription
-        val subject = newTaskSubject
-        val weight = newTaskWeight
+        val subject = newTaskSubject?.takeIf { it.isNotBlank() }
+        val weight = newTaskWeight.coerceIn(1, 5)
         val deadline = newTaskDeadline
 
         clearFields()
 
         viewModelScope.launch {
-            val tempTask = TaskEntity(
-                serverId = 0,
+            val draft = TaskEntity(
+                serverId = null,
                 title = title,
                 description = desc,
                 subjectName = subject,
@@ -112,8 +151,9 @@ class TaskViewModel(
                 deadlineTimestamp = deadline,
                 isCompleted = false
             )
-            val localId = taskDao.insertTask(tempTask).toInt()
-            alarmScheduler.scheduleTaskAlarm(tempTask.copy(id = localId))
+            val localId = taskDao.insertTask(draft).toInt()
+            val localTask = draft.copy(id = localId)
+            alarmScheduler.scheduleTaskAlarm(localTask)
 
             try {
                 val response = apiService.createTask(
@@ -123,7 +163,7 @@ class TaskViewModel(
                         description = desc,
                         subjectName = subject,
                         isCompleted = false,
-                        deadline = formatDeadlineForServer(deadline),
+                        deadline = DeadlineCodec.toServer(deadline),
                         weight = weight
                     )
                 )
@@ -133,9 +173,12 @@ class TaskViewModel(
                     if (actualServerId > 0) {
                         taskDao.updateTaskServerId(localId = localId, serverId = actualServerId)
                     }
+                } else {
+                    _errorEvents.emit("Не удалось сохранить задачу в облако (${response.code()})")
                 }
             } catch (e: Exception) {
-                Log.e("Sync", "Ошибка сервера: ${e.message}")
+                Log.e("TaskSync", "Ошибка сервера: ${e.message}")
+                _errorEvents.emit("Нет связи с сервером. Сохранено локально.")
             }
         }
     }
@@ -145,13 +188,21 @@ class TaskViewModel(
             if (tutorialStep.value == 10) nextStep()
             val newStatus = !task.isCompleted
             taskDao.updateTaskStatus(task.id, newStatus)
-            alarmScheduler.cancelTaskAlarm(task)
+            if (newStatus) {
+                alarmScheduler.cancelTaskAlarm(task)
+            } else {
+                alarmScheduler.scheduleTaskAlarm(task.copy(isCompleted = false))
+            }
 
-            if (task.serverId != null && task.serverId > 0) {
+            val serverId = task.serverId
+            if (serverId != null && serverId > 0) {
                 try {
-                    apiService.updateTaskStatus(task.serverId, newStatus)
+                    val response = apiService.updateTaskStatus(serverId, newStatus)
+                    if (!response.isSuccessful) {
+                        _errorEvents.emit("Статус не сохранён в облаке (${response.code()})")
+                    }
                 } catch (e: Exception) {
-                    Log.e("Sync", "Ошибка обновления статуса в облаке")
+                    Log.e("TaskSync", "Ошибка обновления статуса в облаке: ${e.message}")
                 }
             }
         }
@@ -162,10 +213,17 @@ class TaskViewModel(
             if (tutorialStep.value == 11) nextStep()
             taskDao.deleteTask(task)
             alarmScheduler.cancelTaskAlarm(task)
-            try {
-                apiService.deleteTask(task.serverId!!)
-            } catch (e: Exception) {
-                Log.e("Sync", "Ошибка удаления на сервере")
+
+            val serverId = task.serverId
+            if (serverId != null && serverId > 0) {
+                try {
+                    val response = apiService.deleteTask(serverId)
+                    if (!response.isSuccessful) {
+                        _errorEvents.emit("Удаление не дошло до сервера (${response.code()})")
+                    }
+                } catch (e: Exception) {
+                    Log.e("TaskSync", "Ошибка удаления на сервере: ${e.message}")
+                }
             }
         }
     }
@@ -175,23 +233,14 @@ class TaskViewModel(
             noteDao.updateNoteStatus(note.subjectTitle, !note.isCompleted)
         }
     }
+
     fun syncWithServer() {
         viewModelScope.launch {
-            try {
-                val cloudTasks = apiService.getTasks()
-                cloudTasks.forEach { dto ->
-                    taskDao.insertTask(TaskEntity(
-                        serverId = dto.id,
-                        title = dto.title,
-                        description = dto.description ?: "",
-                        subjectName = dto.subjectName,
-                        isCompleted = dto.isCompleted,
-                        weight = dto.weight,
-                        deadlineTimestamp = parseServerDeadline(dto.deadline)
-                    ))
-                }
-            } catch (e: Exception) {
-                Log.e("Sync", "Синхронизация не удалась")
+            val result = syncManager.sync()
+            if (!result.ok) {
+                Log.e("TaskSync", "Синхронизация не удалась (нет сети)")
+            } else {
+                Log.d("TaskSync", result.summary())
             }
         }
     }
@@ -204,7 +253,8 @@ class TaskViewModel(
                     val schedule = apiService.getSchedule(groupId)
                     subjectsList = schedule.mapNotNull { it.subject?.title }.distinct().sorted()
                 }
-            } catch (e: Exception) { }
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -219,22 +269,6 @@ class TaskViewModel(
         newTaskTitle = ""; newTaskDescription = ""; newTaskSubject = null
         newTaskWeight = 1; newTaskDeadline = null
     }
-
-    private fun formatDeadlineForServer(millis: Long?): String? {
-        if (millis == null) return null
-        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return sdf.format(Date(millis))
-    }
-
-    private fun parseServerDeadline(dateString: String?): Long? {
-        if (dateString.isNullOrBlank()) return null
-        return try {
-            val cleanString = dateString.substringBefore("+").substringBefore("Z").substringBefore(".")
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
-            sdf.parse(cleanString)?.time
-        } catch (e: Exception) { null }
-    }
 }
 
 class TaskViewModelFactory(
@@ -244,6 +278,7 @@ class TaskViewModelFactory(
     private val tokenManager: TokenManager,
     private val alarmScheduler: AlarmScheduler
 ) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         return TaskViewModel(taskDao, noteDao, apiService, tokenManager, alarmScheduler) as T
     }

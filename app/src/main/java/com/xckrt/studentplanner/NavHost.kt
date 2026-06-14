@@ -12,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -36,6 +38,7 @@ fun AppNavigation(apiService: ApiService, tokenManager: TokenManager) {
     val scope = rememberCoroutineScope()
     val savedToken by tokenManager.token.collectAsState(initial = null)
     val savedGroupId by tokenManager.groupId.collectAsState(initial = 0)
+    val isDark by tokenManager.isDarkMode.collectAsState(initial = true)
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
@@ -60,6 +63,9 @@ fun AppNavigation(apiService: ApiService, tokenManager: TokenManager) {
                 } else "login",
                 modifier = Modifier.padding(paddingValues)
             ) {
+                composable("teacher_search") {
+                    TeacherSearchScreen(onBackClick = { navController.popBackStack() })
+                }
                 composable("login") {
                     val authVM: AuthViewModel = viewModel(factory = AuthViewModelFactory(tokenManager))
                     LoginScreen(
@@ -71,7 +77,9 @@ fun AppNavigation(apiService: ApiService, tokenManager: TokenManager) {
                         onNavigateToGroupSelection = {
                             navController.navigate("group_selection") { popUpTo("login") { inclusive = true } }
                         },
-                        onNavigateToRegister = { navController.navigate("register") }
+                        onNavigateToRegister = { navController.navigate("register") },
+                        isDark = isDark,
+                        onToggleTheme = { scope.launch { tokenManager.setDarkMode(!isDark) } }
                     )
                 }
                 composable("schedule") {
@@ -93,7 +101,9 @@ fun AppNavigation(apiService: ApiService, tokenManager: TokenManager) {
                         viewModel = regVM,
                         apiService = apiService,
                         onSuccess = { navController.navigate("login") },
-                        onBackToLogin = { navController.popBackStack() }
+                        onBackToLogin = { navController.popBackStack() },
+                        isDark = isDark,
+                        onToggleTheme = { scope.launch { tokenManager.setDarkMode(!isDark) } }
                     )
                 }
                 composable("group_selection") {
@@ -102,7 +112,7 @@ fun AppNavigation(apiService: ApiService, tokenManager: TokenManager) {
                     GroupSelectionScreen(viewModel = selectionVM, onGroupSelected = { navController.navigate("schedule") { popUpTo("group_selection") { inclusive = true } } })
                 }
                 composable("profile") {
-                    ProfileScreen(tokenManager = tokenManager, onLogout = { navController.navigate("login") { popUpTo(0) { inclusive = true } } }, onNavigateToSelection = { navController.navigate("group_selection") { popUpTo("profile") { inclusive = true } } })
+                    ProfileScreen(tokenManager = tokenManager, onLogout = { navController.navigate("login") { popUpTo(0) { inclusive = true } } }, onNavigateToSelection = { navController.navigate("group_selection") { popUpTo("profile") { inclusive = true } } }, onNavigateToSearch = {navController.navigate("teacher_search") { popUpTo("profile") { inclusive = true } }})
                 }
             }
         }
@@ -132,7 +142,10 @@ fun MyBottomNavigation(
 ) {
     val tutorialStep by tokenManager.tutorialStep.collectAsState(initial = 0)
     val scope = rememberCoroutineScope()
-    NavigationBar {
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp
+    ) {
         NavigationBarItem(
             selected = currentRoute == "schedule",
             onClick = {
@@ -143,15 +156,20 @@ fun MyBottomNavigation(
                 }
             },
             icon = { Icon(Icons.Default.DateRange, contentDescription = null) },
-            label = { Text("Пары") }
+            label = { Text("Пары", fontWeight = FontWeight.SemiBold) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primary,
+                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         )
         NavigationBarItem(
             selected = currentRoute == "tasks",
             onClick = {
                 if (tutorialStep == 5) {
-                    scope.launch {
-                        tokenManager.saveTutorialStep(6)
-                    }
+                    scope.launch { tokenManager.saveTutorialStep(6) }
                 }
                 navController.navigate("tasks") {
                     popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -160,7 +178,14 @@ fun MyBottomNavigation(
                 }
             },
             icon = { Icon(Icons.AutoMirrored.Default.List, contentDescription = null) },
-            label = { Text("Задачи") }
+            label = { Text("Задачи", fontWeight = FontWeight.SemiBold) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primary,
+                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         )
         NavigationBarItem(
             selected = currentRoute == "profile",
@@ -172,7 +197,14 @@ fun MyBottomNavigation(
                 }
             },
             icon = { Icon(Icons.Default.Person, contentDescription = null) },
-            label = { Text("Профиль") }
+            label = { Text("Профиль", fontWeight = FontWeight.SemiBold) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primary,
+                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         )
     }
 }

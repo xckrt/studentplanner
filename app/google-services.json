@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "219811050864",
+    "project_id": "studentplanner-bc632",
+    "storage_bucket": "studentplanner-bc632.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:219811050864:android:4156aa2f7f42a30881cbb5",
+        "android_client_info": {
+          "package_name": "com.xckrt.studentplanner"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFewwQXRFPvpIZRpqnwhAeGVszBG-j4Z4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -17,7 +17,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.xckrt.studentplanner.RetrofitClient.apiService
@@ -41,6 +43,16 @@ class MainActivity : ComponentActivity() {
             "ScheduleAudioWork",
             ExistingPeriodicWorkPolicy.KEEP,
             audioWorkRequest
+        )
+        val taskSyncRequest = PeriodicWorkRequestBuilder<com.xckrt.studentplanner.utils.TaskSyncWorker>(
+            6, TimeUnit.HOURS
+        ).setConstraints(
+            Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        ).build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "TaskSyncWork",
+            ExistingPeriodicWorkPolicy.KEEP,
+            taskSyncRequest
         )
         scheduleDailyReminder()
         setContent {
@@ -67,6 +79,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onStart() {
+        super.onStart()
+        AppForeground.isForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        AppForeground.isForeground = false
+    }
+
     private fun scheduleDailyReminder() {
         val calendar = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 20)

@@ -109,13 +109,19 @@ fun LessonCard(
                     .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             )
 
-            // ПРАВЫЙ БЛОК: КОНТЕНТ ПАР (Сплит-дизайн)
+
             Column(modifier = Modifier.weight(1f)) {
-                lessons.forEachIndexed { index, lesson ->
+                val displayLessons = if (isOriginalMode) {
+                    lessons.distinctBy { it.originalSubject ?: it.subject?.title }
+                } else {
+                    lessons
+                }
+
+                displayLessons.forEachIndexed { index, lesson ->
                     LessonContentRow(
                         lesson = lesson,
                         index = index,
-                        totalLessons = lessons.size,
+                        totalLessons = displayLessons.size,
                         isOriginalMode = isOriginalMode,
                         noteDao = noteDao,
                         viewModel = viewModel,
@@ -124,8 +130,7 @@ fun LessonCard(
                         onFetchHistory = onFetchHistory
                     )
 
-
-                    if (index < lessons.lastIndex) {
+                    if (index < displayLessons.lastIndex) {
                         Divider(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                             thickness = 1.dp,
@@ -159,6 +164,7 @@ private fun LessonContentRow(
     var noteText by remember(noteEntity) { mutableStateOf(noteEntity?.noteText ?: "") }
     val coroutineScope = rememberCoroutineScope()
     val localHasNote = !noteEntity?.noteText.isNullOrBlank()
+    val tutorialStep by viewModel.tutorialStep.collectAsState()
 
 
     val subGroup = when {
@@ -166,7 +172,11 @@ private fun LessonContentRow(
         displaySubject.contains("2 п", ignoreCase = true) -> "П/Г 2"
         else -> null
     }
-
+    val parityTag = when (lesson.weekParity) {
+        1 -> "ЧИСЛИТЕЛЬ"
+        2 -> "ЗНАМЕНАТЕЛЬ"
+        else -> null
+    }
 
     val cleanOriginalSubj = lesson.originalSubject?.replace(Regex("(?i)[12]\\s*п/?г?"), "")?.trim()
     val cleanNewSubj = lesson.subject?.title?.replace(Regex("(?i)[12]\\s*п/?г?"), "")?.replace("ЗАМЕНА", "")?.trim()
@@ -175,7 +185,11 @@ private fun LessonContentRow(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { showDialog = true }
+            .clickable {
+                tokenManager.setKofiInDialog(true)
+                if (tutorialStep == 3) viewModel.nextStep()
+                showDialog = true
+            }
             .background(if (isCancelled) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.1f) else Color.Transparent)
             .padding(12.dp)
     ) {
@@ -187,6 +201,19 @@ private fun LessonContentRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (parityTag != null && isOriginalMode) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = parityTag,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
                     if (subGroup != null) {
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -208,6 +235,15 @@ private fun LessonContentRow(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
                                 color = MaterialTheme.colorScheme.onError
+                            )
+                        }
+                    } else if (lesson.isRoomChangeOnly && !isOriginalMode) {
+                        Surface(color = MaterialTheme.colorScheme.tertiary, shape = RoundedCornerShape(4.dp)) {
+                            Text(
+                                text = "СМЕНА АУД.",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onTertiary
                             )
                         }
                     } else if (lesson.isChange && !isOriginalMode) {
@@ -262,19 +298,29 @@ private fun LessonContentRow(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (lesson.hasCloudNote) {
+                        IconButton(
+                            onClick = { onFetchHistory(displaySubject) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.History,
+                                contentDescription = "История изменений",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier.size(36.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
-                            Icons.Default.History,
+                            imageVector = if (localHasNote) Icons.Default.Edit else Icons.Default.Add,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp).clickable { onFetchHistory(displaySubject) },
-                            tint = MaterialTheme.colorScheme.outline
+                            modifier = Modifier.size(20.dp),
+                            tint = if (localHasNote) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                         )
                     }
-                    Icon(
-                        imageVector = if (localHasNote) Icons.Default.Edit else Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = if (localHasNote) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                    )
                 }
             }
         }
@@ -285,7 +331,10 @@ private fun LessonContentRow(
             subjectTitle = displaySubject,
             viewModel = viewModel,
             initialContent = noteText,
-            onDismiss = { showDialog = false },
+            onDismiss = {
+                tokenManager.setKofiInDialog(false)
+                showDialog = false
+            },
             tokenManager = tokenManager,
             onSave = { newContent, deadlineType, customDate, isPrivate ->
                 coroutineScope.launch {
@@ -293,6 +342,8 @@ private fun LessonContentRow(
                     if (newContent.isBlank()) noteDao.deleteNoteBySubject(displaySubject)
                     else noteDao.insertNote(NoteEntity(displaySubject, newContent, false))
                     onSaveSharedNote(displaySubject, newContent, deadlineType, customDate, isPrivate)
+                    if (tutorialStep == 4) viewModel.nextStep()
+                    tokenManager.setKofiInDialog(false)
                     showDialog = false
                 }
             }

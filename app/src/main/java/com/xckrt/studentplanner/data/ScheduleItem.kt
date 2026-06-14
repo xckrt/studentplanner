@@ -21,7 +21,8 @@ data class ScheduleItem(
     val sharedNote: SharedNoteDTO? = null,
     val hasCloudNote: Boolean = false,
     val subGroupName: String? = null,
-    val date: String? = null
+    val date: String? = null,
+    val weekParity:Int = 0
 )
 
 data class Subject(

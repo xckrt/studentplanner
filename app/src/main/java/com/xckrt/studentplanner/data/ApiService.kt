@@ -27,15 +27,27 @@ interface ApiService {
         @Path("groupName") groupName: String,
         @Path("date") date: String
     ): List<ScheduleItem>
+    @GET("api/changes/weekparity")
+    suspend fun getWeekParity(
+        @Query("groupName") groupName: String,
+        @Query("date") date: String
+    ): WeekParityResponse
+    @GET("api/Groups/name/{groupId}")
+    suspend fun getGroupName(@Path("groupId") groupId: Int):GroupNameResponse
     @Multipart
     @POST("api/Parser/upload")
     suspend fun uploadSchedule(
         @Part file: MultipartBody.Part
     ): Response<UploadResponse>
-
+    @GET("api/teachers/all")
+    suspend fun getAllTeachers(): List<String>
     @GET("api/notes/group/{groupId}")
     suspend fun getGroupNotes(@Path("groupId") groupId: Int): List<SharedNoteDTO>
-
+    @GET("api/teachers/now")
+    suspend fun getTeacherNow(
+        @Query("lastName") lastName: String,
+        @Query("clientTime") clientTime: String
+    ): TeacherNowResponse
     @POST("api/notes/shared")
     suspend fun saveSharedNote(@Body request: NoteRequest): Response<Unit>
 
@@ -58,6 +70,10 @@ interface ApiService {
 
     @POST("api/tasks")
     suspend fun createTask(@Body task: TaskDto): Response<TaskDto>
+    @GET("api/parser/absences")
+    suspend fun getAbsentTeachers(
+        @Query("date") date: String
+    ): List<TeacherAbsenceDto>
 
     @PUT("api/tasks/{id}/status")
     suspend fun updateTaskStatus(
@@ -76,6 +92,25 @@ data class LoginResponse(
     val lastName: String?,
     val avatarUrl: String?
 )
+data class WeekParityResponse(
+    val weekParity: Int
+)
+data class TeacherNowResponse(
+    val status: String,
+    val message: String? = null,
+    val isChange: Boolean = false,
+    val lessonNumber: Int? = null,
+    val auditorium: String? = null,
+    val groupName: String? = null,
+    val subject: String? = null,
+    val nextSubject: String? = null,
+    val nextRoom: String? = null,
+    val nextTime: String? = null
+)
+data class TeacherAbsenceDto(
+    val teacherId: Int,
+    val teacherName: String
+)
 data class TaskDto(
     @SerializedName("id") val id: Int,
     @SerializedName("title") val title: String,
@@ -86,6 +121,7 @@ data class TaskDto(
     @SerializedName("weight") val weight: Int
 )
 data class UpdateGroupRequest(val groupId: Int)
+data class GroupNameResponse(val name: String)
 data class GroupItem(
     val id: Int,
     val name: String

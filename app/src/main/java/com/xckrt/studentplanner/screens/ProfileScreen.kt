@@ -3,6 +3,7 @@ package com.xckrt.studentplanner.screens
 import android.Manifest
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,11 +14,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +43,11 @@ import androidx.work.WorkManager
 import coil.compose.AsyncImage
 import com.xckrt.studentplanner.RetrofitClient.apiService
 import com.xckrt.studentplanner.TokenManager
+import com.xckrt.studentplanner.data.AuthManager
+import com.xckrt.studentplanner.data.TaskSyncManager
+import com.xckrt.studentplanner.db.AppDatabase
+import com.xckrt.studentplanner.notifications.AlarmScheduler
+import com.xckrt.studentplanner.service.FcmTopics
 import com.xckrt.studentplanner.utils.CalendarManager
 import com.xckrt.studentplanner.utils.FileUtils
 import kotlinx.coroutines.flow.first
@@ -52,7 +62,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 fun ProfileScreen(
     tokenManager: TokenManager,
     onLogout: () -> Unit,
-    onNavigateToSelection: () -> Unit
+    onNavigateToSelection: () -> Unit,
+    onNavigateToSearch:() -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -164,7 +175,14 @@ fun ProfileScreen(
                     modifier = Modifier
                         .size(140.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .background(
+                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.tertiary
+                                )
+                            )
+                        )
                         .clickable(enabled = isEditMode) { imagePickerLauncher.launch("image/*") },
                     contentAlignment = Alignment.Center
                 ) {
@@ -173,7 +191,7 @@ fun ProfileScreen(
                     } else if (!savedAvatarUrl.isNullOrBlank()) {
                         AsyncImage(model = "$BASE_URL$savedAvatarUrl", contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                     } else {
-                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(70.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(70.dp), tint = Color.White)
                     }
 
                     if (isEditMode) {
@@ -259,7 +277,59 @@ fun ProfileScreen(
             }
 
             Spacer(Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(32.dp))
 
+            Text(
+                text = "Утилиты",
+                color = Color.Gray,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+            )
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .clickable { onNavigateToSearch() },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                ),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Поиск",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Найти преподавателя",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Где сейчас, в какой аудитории",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             SettingsSection(title = "Обучение") {
                 SettingsRow(
@@ -282,6 +352,19 @@ fun ProfileScreen(
                                 Manifest.permission.WRITE_CALENDAR
                             )
                         )
+                    }
+                )
+                SettingsRow(
+                    icon = Icons.Default.Refresh,
+                    title = "Синхронизировать задачи",
+                    subtitle = "Отправить и забрать задачи из облака",
+                    onClick = {
+                        scope.launch {
+                            val dao = AppDatabase.getDatabase(context).taskDao()
+                            val mgr = TaskSyncManager(dao, apiService, AlarmScheduler(context))
+                            val result = mgr.sync()
+                            Toast.makeText(context, result.summary(), Toast.LENGTH_LONG).show()
+                        }
                     }
                 )
                 SettingsSwitchRow(
@@ -318,7 +401,16 @@ fun ProfileScreen(
             // --- ВЫХОД ---
             Spacer(Modifier.height(24.dp))
             TextButton(
-                onClick = { scope.launch { tokenManager.logout(); onLogout() } },
+                onClick = {
+                    scope.launch {
+                        FcmTopics.unsubscribe(tokenManager.groupId.first())
+                        val db = AppDatabase.getDatabase(context)
+                        db.taskDao().clearAll()
+                        AuthManager.token = null
+                        tokenManager.logout()
+                        onLogout()
+                    }
+                },
                 modifier = Modifier.padding(bottom = 32.dp)
             ) {
                 Text("Выйти из аккаунта", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
