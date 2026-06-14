@@ -55,7 +55,7 @@
 
 ### Из готового релиза (APK)
 
-1. Перейди в раздел [Releases]({{ https://github.com/xckrt/studentplanner/releases/tag/Release }}).
+1. Перейди в раздел [Releases](https://github.com/xckrt/studentplanner/releases/tag/Release).
 2. Скачай файл `studentplanner.apk`.
 3. На устройстве разреши установку из неизвестных источников.
 4. Открой скачанный APK и установи приложение.
@@ -65,7 +65,7 @@
 ### Сборка из исходного кода
 
 ```bash
-git clone {{ ссылка на репозиторий }}
+git clone https://github.com/xckrt/studentplanner
 ```
 
 1. Открой проект в Android Studio.
@@ -76,7 +76,7 @@ git clone {{ ссылка на репозиторий }}
 
 ## Релиз
 
-Актуальная версия доступна на странице [Releases]({{ https://github.com/xckrt/studentplanner/releases/tag/Release }}).
+Актуальная версия доступна на странице [Releases](https://github.com/xckrt/studentplanner/releases/tag/Release).
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
